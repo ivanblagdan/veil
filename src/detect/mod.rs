@@ -16,7 +16,6 @@ pub struct Pipeline {
 }
 #[derive(Debug)]
 pub struct Analysis {
-    pub redacted: String,
     pub model_input: String,
     pub heuristic: Vec<Detection>,
     pub model_spans: Vec<Detection>,
@@ -141,15 +140,7 @@ impl Pipeline {
         .into_iter()
         .filter(|s| !s.label.kept())
         .collect::<Vec<_>>();
-        let mut redacted = text.to_owned();
-        for span in spans.iter().rev() {
-            redacted.replace_range(
-                span.range.start()..span.range.end(),
-                &format!("[{}]", span.label.as_str()),
-            );
-        }
         Ok(Analysis {
-            redacted,
             model_input: masked.text,
             heuristic,
             model_spans,

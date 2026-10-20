@@ -138,9 +138,27 @@ Use `redact` when you want irreversible replacement rather than restorable place
 
 ```sh
 printf '%s' 'Email alex@example.com' | veil redact
+# Email [EMAIL_1]
 ```
 
-Its JSONL mode uses a separate record format: `{"uid":1,"source_text":"..."}`. It returns `uid`, `redacted` and `latency_ms`. The optional `--audit` flag includes original sensitive text and diagnostic details; keep that output private.
+Redaction uses numbered markers such as `[EMAIL_1]` and `[GIVEN_NAME_1]`. Numbers start at 1 for each label. A repeated exact value with the same label reuses its number, including across JSONL records in the same run. Numbers reset when a new command starts.
+
+These numbers identify detected text values, not people. Different spellings, capitalization and Unicode forms remain separate. Veil does not assume that a nickname, a full name and an email address refer to the same person.
+
+> When sending redacted text to a language model, consider including this instruction: “Different redaction markers may refer to the same person. Do not count markers as distinct participants. Use surrounding context to identify possible connections, and state uncertainty rather than assuming identities.”
+
+Email addresses are replaced in full by default. To keep their domains:
+
+```sh
+printf '%s' 'Email alex@example.com' | veil redact --keep-email-domains
+# Email [EMAIL_1]@example.com
+```
+
+**Domains can identify people or organizations.** Keep them only when that information is safe to share. The option applies to complete supported ASCII email addresses; folded, malformed or larger detected values are still replaced in full. The complete original address determines its number, so two addresses with the same name before `@` but different domains remain separate.
+
+Numbering keeps distinct detected values in memory until the command exits. It does not create a vault or make redaction reversible. `cloak` and `uncloak` keep their existing run-specific placeholders and vault behavior; `--keep-email-domains` applies only to `redact`.
+
+`redact --input jsonl` uses the record format: `{"uid":1,"source_text":"..."}`. It returns `uid`, `redacted` and `latency_ms`. The optional `--audit` flag includes original sensitive text and diagnostic details; keep that output private.
 
 ### Verify an installation
 
@@ -162,6 +180,7 @@ For a development build outside an installed directory, supply both `--artifacts
 - **Reserved text.** Input strings and keys containing `[[VEIL:` are rejected to avoid confusion with generated placeholders. Keep placeholders unchanged when passing them through another tool.
 - **Line boundaries.** Use `text` for exact line-ending preservation. Line mode rejects ambiguous trailing CR characters. Restoring a multiline value into `lines` is rejected rather than creating extra records.
 - **Partial failure.** Streaming commands may have already written earlier records when a later record fails. Those records remain restorable from a complete, valid vault. A failed output write may leave an extra saved record. A vault ending in an incomplete entry is rejected; automatic repair and resume are not available.
+- **Redaction markers are display labels.** They are not verified identities or restorable tokens. Repeated numbers show matching detected values within one run, not proof that references describe the same person.
 - **No record joining.** Veil restores placeholders in text and JSON strings. It does not match separate result files back to source records.
 
 ## Further information

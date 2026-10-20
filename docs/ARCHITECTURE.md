@@ -14,6 +14,7 @@ All processing takes place in the current process. There is no background servic
 | `src/main.rs` | Arguments, standard input/output and command selection |
 | `src/lib.rs` | Model loading, text encoding, running the CPU model and reading its output |
 | `src/detect/` | Pattern rules, model windows, source ranges and final replacement spans |
+| `src/redact.rs` | Numbered redaction markers and optional email domains |
 | `src/privacy/mod.rs` | Record formats, placeholder allocation and restoration |
 | `src/privacy/json.rs` | JSON parsing without duplicate keys or loss of numeric precision |
 | `src/privacy/vault.rs` | Vault creation, saved records and structural validation |
@@ -47,9 +48,21 @@ Long input is split into windows of up to 500 content tokens with 64 tokens of o
 
 The decoder selects the first maximum when scores tie exactly. It does not round nearby scores into a tie. Candidate spans are built from token labels and scores; an outside label does not by itself flush an active candidate. The confidence limits are 0.4 for starting a span and 0.15 for extending one. Span repair is bounded to 32 iterations.
 
-Final ranges are checked against UTF-8 character boundaries and expanded to avoid splitting a displayed character. Overlapping detections are combined and checked. City, state and ZIP-code labels are kept by default. Right-to-left replacement prevents an earlier replacement from moving the offsets of a later one.
+Final ranges are checked against UTF-8 character boundaries and expanded to avoid splitting a displayed character. Overlapping detections are combined and checked. City, state and ZIP-code labels are kept by default. Detection returns ordered, non-overlapping source ranges. Output formatting is separate from detection.
 
-`redact` returns redacted text without restoration data. Its optional JSONL audit output includes original substrings and internal decisions and must be treated as sensitive.
+## Numbered redaction
+
+The `redact` command creates one formatter for the whole invocation. For each label it stores a lookup from the exact original value to a number. A new value receives the next number for that label; repeats reuse it. The lookup size determines the next number, so there is no separate counter to keep in sync.
+
+Before formatting a record, all source ranges are checked for valid UTF-8 boundaries, ordering and overlap. The formatter then reads left to right, copying untouched text and inserting markers such as `[GIVEN_NAME_1]`. Numbers follow first appearance in the original input, not reverse replacement order. JSONL records share the same formatter. A new invocation starts with empty lookups.
+
+By default, an email becomes `[EMAIL_1]`. With `--keep-email-domains`, a complete supported address can become `[EMAIL_1]@example.com`. The entire detected value is still the lookup key, not just the portion before `@`. Case and Unicode forms are not normalized for number reuse.
+
+Domain display accepts a standalone ASCII address with a supported local part and DNS-style domain. It does not extract a domain from a folded address, URL or larger detected span. Values that do not pass these checks remain fully replaced. The option changes display only; the detected spans and their labels are unchanged.
+
+These markers do not establish a person's identity, link nicknames, or support restoration. Only the cloak/uncloak path saves a vault. Original text that already looks like a display marker is not authenticated or assigned an identity by the formatter.
+
+The JSONL `latency_ms` value covers detection and formatting, before JSON output encoding. Optional JSONL audit output includes original substrings and internal decisions and must be treated as sensitive.
 
 ## Input records
 
@@ -104,7 +117,7 @@ Before restoration emits output, it validates the entire vault: header, record o
 
 ## Memory use
 
-Streaming modes retain the current record and the lookup of unique detected values. That lookup grows with the number of distinct detected values in the run. Text and JSON document modes retain the complete input document. Restoration retains unique token values after reading and validating the vault.
+Cloaking streams retain the current record and the lookup of unique detected values. That lookup grows with the number of distinct detected values in the run. Text and JSON document modes retain the complete input document. Restoration retains unique token values after reading and validating the vault. Numbered redaction also retains unique detected values in memory, grouped by label, but writes no vault.
 
 ## Installation
 

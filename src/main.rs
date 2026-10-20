@@ -49,6 +49,9 @@ enum Command {
     Redact {
         #[arg(long, value_enum, default_value_t = Framing::Text)]
         input: Framing,
+        /// Show domains of complete email addresses. Domains can identify people or organizations.
+        #[arg(long)]
+        keep_email_domains: bool,
         /// Include sensitive diagnostic details. Requires --input jsonl; keep output private.
         #[arg(long)]
         audit: bool,
@@ -125,16 +128,29 @@ fn run() -> Result<()> {
                 |text| pipeline.analyze(text).map(|analysis| analysis.spans),
             )?;
         }
-        Command::Redact { input, audit } => {
-            use veil_cli::detect::{Analysis, Pipeline};
+        Command::Redact {
+            input,
+            audit,
+            keep_email_domains,
+        } => {
+            use veil_cli::{
+                detect::{Analysis, Pipeline},
+                redact::{EmailDomains, Redactor},
+            };
             let mut pipeline = Pipeline::new(detector)?;
+            let mut redactor = Redactor::new(if keep_email_domains {
+                EmailDomains::Keep
+            } else {
+                EmailDomains::Hide
+            });
             let mut output = BufWriter::new(io::stdout().lock());
             match input {
                 Framing::Text => {
                     ensure!(!audit, "--audit requires --input jsonl");
                     let mut text = String::new();
                     io::stdin().read_to_string(&mut text)?;
-                    output.write_all(pipeline.analyze(&text)?.redacted.as_bytes())?;
+                    let result = pipeline.analyze(&text)?;
+                    output.write_all(redactor.render(&text, &result.spans)?.as_bytes())?;
                 }
                 Framing::Jsonl => {
                     #[derive(Deserialize)]
@@ -152,13 +168,18 @@ fn run() -> Result<()> {
                         let row: TextRow = serde_json::from_str(&line).map_err(|_| {
                             anyhow::anyhow!("invalid detection input at line {}", index + 1)
                         })?;
+                        let record_start = Instant::now();
                         let result = pipeline
                             .analyze(&row.source_text)
                             .with_context(|| format!("detection failed at line {}", index + 1))?;
+                        let redacted = redactor
+                            .render(&row.source_text, &result.spans)
+                            .with_context(|| format!("redaction failed at line {}", index + 1))?;
+                        let latency_ms = milliseconds(record_start);
                         let value = if audit {
-                            serde_json::json!({"uid":row.uid,"redacted":result.redacted,"latency_ms":result.latency_ms,"model_input":result.model_input,"heuristic":Analysis::audit_spans(&result.heuristic,&row.source_text)?,"model_spans":Analysis::audit_spans(&result.model_spans,&row.source_text)?,"spans":Analysis::audit_spans(&result.spans,&row.source_text)?,"first_window_ids":result.first_window_ids,"windows":result.windows,"token_decisions":result.token_decisions})
+                            serde_json::json!({"uid":row.uid,"redacted":redacted,"latency_ms":latency_ms,"model_input":result.model_input,"heuristic":Analysis::audit_spans(&result.heuristic,&row.source_text)?,"model_spans":Analysis::audit_spans(&result.model_spans,&row.source_text)?,"spans":Analysis::audit_spans(&result.spans,&row.source_text)?,"first_window_ids":result.first_window_ids,"windows":result.windows,"token_decisions":result.token_decisions})
                         } else {
-                            serde_json::json!({"uid":row.uid,"redacted":result.redacted,"latency_ms":result.latency_ms})
+                            serde_json::json!({"uid":row.uid,"redacted":redacted,"latency_ms":latency_ms})
                         };
                         serde_json::to_writer(&mut output, &value)?;
                         output.write_all(b"\n")?;

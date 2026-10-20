@@ -25,6 +25,12 @@ RUN --network=none veil verify-artifacts \
     && veil redact < original.txt > redacted.txt \
     && ! grep -q alex@example.com redacted.txt \
     && ! grep -q '\[\[VEIL:' redacted.txt \
+    && ! grep -q example.com redacted.txt \
+    && grep -qF '[EMAIL_1]' redacted.txt \
+    && printf '{"uid":1,"source_text":"Email alex@example.com"}\n{"uid":2,"source_text":"Email jordan@example.com"}\n{"uid":3,"source_text":"Email alex@example.com"}\n' \
+       | veil redact --input jsonl --keep-email-domains > numbered.jsonl \
+    && test "$(grep -cF '[EMAIL_1]@example.com' numbered.jsonl)" -eq 2 \
+    && test "$(grep -cF '[EMAIL_2]@example.com' numbered.jsonl)" -eq 1 \
     && veil cloak --vault text.vault < original.txt > protected.txt \
     && ! grep -q alex@example.com protected.txt \
     && veil uncloak --vault text.vault < protected.txt > restored.txt \

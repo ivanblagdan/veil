@@ -12,6 +12,7 @@ use tokenizers::Tokenizer;
 pub mod detect;
 pub mod installation;
 pub mod privacy;
+pub mod redact;
 
 #[derive(Debug, Deserialize)]
 struct Configuration {
