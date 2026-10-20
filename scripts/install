@@ -1,0 +1,200 @@
+#!/usr/bin/env python3
+"""Build and install one self-contained Veil prefix. Python 3.9+, stdlib only."""
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+from pathlib import Path
+import platform
+import shlex
+import shutil
+import subprocess
+import sys
+import tarfile
+import tempfile
+import urllib.request
+
+ROOT = Path(__file__).resolve().parent.parent
+
+
+def digest(path: Path) -> str:
+    h = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def fetch(asset: dict, cache: Path, offline: bool) -> Path:
+    """Content-addressed build cache. Corruption fails instead of silently retrying."""
+    cached = cache / asset["sha256"]
+    if cached.exists():
+        if digest(cached) != asset["sha256"]:
+            raise RuntimeError(f"corrupt download cache entry: {cached}; remove it explicitly")
+        return cached
+    if offline:
+        raise RuntimeError(f"offline cache miss: {asset['url']}")
+    print(f"Downloading {asset['url']}", file=sys.stderr)
+    fd, temporary = tempfile.mkstemp(prefix=".download-", dir=cache)
+    try:
+        request = urllib.request.Request(asset["url"], headers={"User-Agent": "veil-source-installer"})
+        with os.fdopen(fd, "wb") as output:
+            with urllib.request.urlopen(request, timeout=90) as response:
+                shutil.copyfileobj(response, output)
+        temporary = Path(temporary)
+        if digest(temporary) != asset["sha256"]:
+            raise RuntimeError(f"download checksum mismatch: {asset['url']}")
+        os.replace(temporary, cached)
+    finally:
+        Path(temporary).unlink(missing_ok=True)
+    return cached
+
+
+def copy_asset(source: Path, destination: Path, expected: str) -> None:
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(source, destination)
+    destination.chmod(0o644)
+    if digest(destination) != expected:
+        raise RuntimeError(f"installed checksum mismatch: {destination}")
+
+
+def native_target() -> tuple[str, str]:
+    host = next(
+        line.removeprefix("host: ")
+        for line in subprocess.check_output(["rustc", "-vV"], text=True).splitlines()
+        if line.startswith("host: ")
+    )
+    targets = {
+        "x86_64-unknown-linux-gnu": "linux-x86_64",
+        "aarch64-unknown-linux-gnu": "linux-aarch64",
+        "x86_64-apple-darwin": "macos-x86_64",
+        "aarch64-apple-darwin": "macos-aarch64",
+    }
+    if host not in targets:
+        raise RuntimeError(f"unsupported native Rust host {host}; supports glibc Linux and macOS, x86-64/ARM64")
+    architecture = {"arm64": "aarch64", "amd64": "x86_64"}.get(platform.machine().lower(), platform.machine().lower())
+    system = {"Darwin": "macos", "Linux": "linux"}.get(platform.system())
+    if targets[host] != f"{system}-{architecture}":
+        raise RuntimeError("Rust host must match the installation environment; cross-installation is not supported")
+    if system == "linux" and platform.libc_ver()[0] != "glibc":
+        raise RuntimeError("this installer requires glibc Linux; Alpine/musl is not supported")
+    return host, targets[host]
+
+
+def build(host: str, offline: bool) -> tuple[Path, str]:
+    common = ["--manifest-path", str(ROOT / "Cargo.toml"), "--locked"]
+    if offline:
+        common.append("--offline")
+    metadata = json.loads(subprocess.check_output(
+        ["cargo", "metadata", "--format-version", "1", "--no-deps", *common], cwd=ROOT, text=True,
+    ))
+    package = next(item for item in metadata["packages"] if item["name"] == "veil-cli")
+    # An explicit native target also prevents CARGO_BUILD_TARGET from causing a cross-install.
+    subprocess.run(["cargo", "build", "--release", "--target", host, *common], cwd=ROOT, check=True)
+    return Path(metadata["target_directory"]) / host / "release" / "veil", package["version"]
+
+
+def smoke_test(prefix: Path) -> None:
+    binary = prefix / "bin/veil"
+    with tempfile.TemporaryDirectory(prefix="veil-install-smoke-") as temporary:
+        work = Path(temporary)
+        verification = subprocess.run([str(binary), "verify-artifacts"], cwd=work, check=True, capture_output=True, text=True)
+        if not json.loads(verification.stdout)["passed"]:
+            raise RuntimeError("installed asset verification failed")
+        original = "Email alex@example.com\n"
+        protected = subprocess.run(
+            [str(binary), "cloak", "--vault", str(work / "smoke.vault")],
+            input=original, text=True, capture_output=True, cwd=work, check=True,
+        ).stdout
+        if "alex@example.com" in protected or "[[VEIL:" not in protected:
+            raise RuntimeError("installed detector smoke test failed")
+        restored = subprocess.run(
+            [str(binary), "uncloak", "--vault", str(work / "smoke.vault")],
+            input=protected, text=True, capture_output=True, cwd=work, check=True,
+        ).stdout
+        if restored != original:
+            raise RuntimeError("installed restoration smoke test failed")
+
+
+def install(prefix: Path, cache: Path, offline: bool) -> None:
+    if os.path.lexists(prefix):
+        raise RuntimeError(f"refusing to overwrite existing installation: {prefix}; choose a new prefix")
+    host, target = native_target()
+    lock = json.loads((ROOT / "assets.lock.json").read_text())
+    if lock["schema"] != 1:
+        raise RuntimeError("unsupported asset lock schema")
+    selected = lock["platforms"][target]
+    prefix.parent.mkdir(parents=True, exist_ok=True)
+    cache.mkdir(parents=True, exist_ok=True)
+    # Serialize installers targeting the same prefix, without touching existing installations.
+    lock_path = prefix.parent / f".{prefix.name}.install-lock"
+    lock_fd = os.open(lock_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    os.close(lock_fd)
+    stage = None
+    try:
+        stage = Path(tempfile.mkdtemp(prefix=f".{prefix.name}.stage-", dir=prefix.parent))
+        for asset in lock["files"]:
+            copy_asset(fetch(asset, cache, offline), stage / asset["path"], asset["sha256"])
+        archive = fetch(lock["runtime_archive"], cache, offline)
+        with tarfile.open(archive, "r:gz") as bundle:
+            for asset in selected["files"]:
+                member = bundle.getmember(asset["member"])
+                if not member.isfile():
+                    raise RuntimeError(f"expected regular runtime archive member: {member.name}")
+                destination = stage / asset["path"]
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                # Never extract an archive tree, follow archive links, or execute npm scripts.
+                with bundle.extractfile(member) as source, destination.open("wb") as output:
+                    shutil.copyfileobj(source, output)
+                destination.chmod(0o644)
+                if digest(destination) != asset["sha256"]:
+                    raise RuntimeError(f"runtime checksum mismatch: {member.name}")
+        binary, version = build(host, offline)
+        (stage / "bin").mkdir()
+        shutil.copyfile(binary, stage / "bin/veil")
+        (stage / "bin/veil").chmod(0o755)
+        for name in ["README.md", "LICENSE", "assets.lock.json", "docs/ARCHITECTURE.md"]:
+            destination = stage / name
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(ROOT / name, destination)
+            destination.chmod(0o644)
+        (stage / "manifest.json").write_text(json.dumps({
+            "schema": 1, "veil_version": version, "asset_set": lock["asset_set"], "platform": target,
+        }, indent=2) + "\n")
+        (stage / "manifest.json").chmod(0o644)
+        smoke_test(stage)
+        # Make the installed prefix readable by a non-root container user, even with a restrictive umask.
+        for directory, _, _ in os.walk(stage):
+            Path(directory).chmod(0o755)
+        if os.path.lexists(prefix):
+            raise RuntimeError(f"installation prefix appeared while building: {prefix}")
+        os.rename(stage, prefix)
+        stage = None
+    finally:
+        if stage is not None:
+            shutil.rmtree(stage)
+        lock_path.unlink()
+    print(f"Installed Veil {version} ({target}) at {prefix}")
+    print(f"Add to PATH: export PATH={shlex.quote(str(prefix / 'bin'))}:\"$PATH\"")
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--prefix", required=True, type=Path, help="new installation directory (never overwritten)")
+    default_cache = Path(os.environ.get("XDG_CACHE_HOME", str(Path.home() / ".cache"))) / "veil/downloads"
+    parser.add_argument("--cache-dir", type=Path, default=default_cache, help="verified build-time download cache")
+    parser.add_argument("--offline", action="store_true", help="require cached assets and Cargo dependencies; no downloads")
+    args = parser.parse_args()
+    install(Path(os.path.abspath(args.prefix.expanduser())), args.cache_dir.expanduser().absolute(), args.offline)
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except (OSError, ValueError, RuntimeError, KeyError, tarfile.TarError, subprocess.CalledProcessError) as error:
+        print(f"veil install: {error}", file=sys.stderr)
+        if isinstance(error, subprocess.CalledProcessError) and error.stderr:
+            print(error.stderr, file=sys.stderr)
+        sys.exit(1)

@@ -1,0 +1,68 @@
+{
+  "schema": 1,
+  "asset_set": "rampart-b1993e4e-ort-1.21.0-v2",
+  "runtime_version": "1.21.0",
+  "files": [
+    {
+      "path": "model/config.json",
+      "url": "https://huggingface.co/nationaldesignstudio/rampart/resolve/b1993e4e68b082835b80ffc65acc03325ea2e501/config.json",
+      "sha256": "003b84bbcd489f5e782fe5cad8f3249c3653ec880089abb1ccc398a0d895e3e6"
+    },
+    {
+      "path": "model/tokenizer.json",
+      "url": "https://huggingface.co/nationaldesignstudio/rampart/resolve/b1993e4e68b082835b80ffc65acc03325ea2e501/tokenizer.json",
+      "sha256": "98ade711428b42a1b5343c403a73344535e92de8e19359cdb567ef34da210259"
+    },
+    {
+      "path": "model/onnx/model_q4.onnx",
+      "url": "https://huggingface.co/nationaldesignstudio/rampart/resolve/b1993e4e68b082835b80ffc65acc03325ea2e501/onnx/model_q4.onnx",
+      "sha256": "9f27d24949b0581701071ea5ef522d77ccd3f50c525cc91eac4d265b0fc2afe5"
+    }
+  ],
+  "runtime_archive": {
+    "url": "https://registry.npmjs.org/onnxruntime-node/-/onnxruntime-node-1.21.0.tgz",
+    "sha256": "c711a4048a8b460a70de25a5008b1628e3773878ef9deec1dd4a4ccab46de01a"
+  },
+  "platforms": {
+    "linux-x86_64": {
+      "runtime": "lib/libonnxruntime.so.1.21.0",
+      "files": [
+        {
+          "path": "lib/libonnxruntime.so.1.21.0",
+          "member": "package/bin/napi-v3/linux/x64/libonnxruntime.so.1.21.0",
+          "sha256": "05bfddeefc536a44478c20226218dae8853995518bb2a994b4fa15a996f5f412"
+        }
+      ]
+    },
+    "linux-aarch64": {
+      "runtime": "lib/libonnxruntime.so.1.21.0",
+      "files": [
+        {
+          "path": "lib/libonnxruntime.so.1.21.0",
+          "member": "package/bin/napi-v3/linux/arm64/libonnxruntime.so.1.21.0",
+          "sha256": "36671b53885a8433882c4db360138bd060f3580f7d7cb6578050e755e83b6128"
+        }
+      ]
+    },
+    "macos-x86_64": {
+      "runtime": "lib/libonnxruntime.1.21.0.dylib",
+      "files": [
+        {
+          "path": "lib/libonnxruntime.1.21.0.dylib",
+          "member": "package/bin/napi-v3/darwin/x64/libonnxruntime.1.21.0.dylib",
+          "sha256": "eadc928764eff24f8b2f332d51a6aa03d82abe6febf0fb5016f2c42dea43c8e1"
+        }
+      ]
+    },
+    "macos-aarch64": {
+      "runtime": "lib/libonnxruntime.1.21.0.dylib",
+      "files": [
+        {
+          "path": "lib/libonnxruntime.1.21.0.dylib",
+          "member": "package/bin/napi-v3/darwin/arm64/libonnxruntime.1.21.0.dylib",
+          "sha256": "1bce2d05d778282c912e7fab6d5dfc5fa851f5797e8d0914a62d4adeb1d4d82b"
+        }
+      ]
+    }
+  }
+}
